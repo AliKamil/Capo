@@ -25,6 +25,10 @@ class ParserController extends Controller
                            'tenth',
                            'eleventh',
                            'twelfth'];
+    //statistics
+    protected $capo_entries = 0;
+    protected $capo_unmatched = 0;
+
     /** @var PDO $source */
     protected $source;
     /** @var PDO $destination */
@@ -56,6 +60,10 @@ class ParserController extends Controller
         $offset = 0;
 
         $this->start();
+
+        $total = $this->getCount();
+        $this->stdout(sprintf('Total rows to proceed: %d /n', $total));
+        Console::startProgress(0, $total);
         do {
             //retrieving data from source
             $data = $this->getData($limit, $offset);
@@ -65,8 +73,12 @@ class ParserController extends Controller
             $this->insert($result);
 
             $offset += $limit;
+            Console::updateProgress($offset, $total);
         } while (!empty($data));
-        var_dump($this->stop());
+        Console::endProgress();
+        $this->stdout(sprintf('Total "capo" occurencies (except "no capo"): %d;/n', $this->capo_entries));
+        $this->stdout(sprintf('Unmatched occurencies: %d;\r\n', $this->capo_unmatched));
+        $this->stdout(sprintf('Executing time: %d;\r\n', $this->stop()));
     }
 
     /**
@@ -81,12 +93,12 @@ class ParserController extends Controller
         $query_string = 'SELECT t.content, t.id from content.tabs as t';
         if ($offset) {
             $query_string .= sprintf(
-                ' JOIN (SELECT id FROM content.tabs ORDER BY id LIMIT %d, %d) as i ON i.id = t.id',
+                ' JOIN (SELECT id FROM content.tabs ORDER BY id LIMIT %d, %d) as i ON i.id = t.id;',
                 $offset,
                 $limit
             );
         } else {
-            $query_string .= sprintf(' LIMIT %d', $limit);
+            $query_string .= sprintf(' LIMIT %d;', $limit);
         }
         $query = $this->source->prepare($query_string);
         $query->execute();
@@ -104,18 +116,25 @@ class ParserController extends Controller
         $result = [];
         $regexp = "/capo\\D{0,10}(\\d{1,2}|" . implode('|', $this->numerals) . ")/is";
         $no_capo_regexp = "/no +capo/is";
+        $capo_regex = "/( |\n)capo( |\n)/is";
+
 
         foreach ($data as $tab) {
             //first removing all 'no capo entries'
             $tab = preg_replace($no_capo_regexp, '', $tab);
+            $this->capo_entries += preg_match_all($capo_regex, $tab['content']);
             //finding matches
-            preg_match_all($regexp, $tab, $matches);
+            preg_match_all($regexp, $tab['content'], $matches);
+
+            preg_replace($regexp, $tab['content'], '');
+            $this->capo_unmatched += preg_match_all($capo_regex, $tab['content']);
+
             if (!empty($matches[0])) {
                 $position = $matches[1][0]; //we deal only with first occurence, maybe TODO: is it a good practice?
                 if (!is_numeric($position)) {
                     $position = array_search($position, $this->numerals);
                 }
-                if ($position > 0) {
+                if ($position > 0 and $position <= 12) { //what max capo value could be?
                     $result[] = [$tab['id'],
                                  $position];
                 }
@@ -165,6 +184,17 @@ class ParserController extends Controller
     }
 
     /**
+     * @return string count
+     */
+    protected function getCount()
+    {
+        $query = $this->source->prepare('SELECT COUNT(*) FROM content.tabs');
+        $query->execute();
+        return $query->fetchColumn();
+    }
+
+
+    /**
      * The following part is for perfomance testing purposes only
      */
 
@@ -174,8 +204,7 @@ class ParserController extends Controller
      */
     protected function start()
     {
-        $date = new \DateTime();
-        $this->startTime = $date->getTimestamp();
+        $this->startTime = $this->microtime_float();
     }
 
     /**
@@ -184,14 +213,14 @@ class ParserController extends Controller
      */
     protected function stop()
     {
-        $date = new \DateTime();
-        return $date->getTimestamp() - $this->startTime;
+        return $this->microtime_float() - $this->startTime;
     }
 
     /**
      * SpeedTest
+     * @param int $id
      */
-    public function actionTest()
+    public function actionTest($id)
     {
         $this->source = $this->getConnection(
             ['host' => 'devreplica.lan',
@@ -201,10 +230,17 @@ class ParserController extends Controller
             ]
         );
         $this->start();
-        $query = 'select content, id from content.tabs where id = 1000';
+        $query = 'select content, id from content.tabs where id = ' . $id;
         $query = $this->source->prepare($query);
         $query->execute();
         $this->stdout(sprintf('Selecting one row by id took: %d', $this->stop()));
+    }
+
+
+    protected function microtime_float()
+    {
+        list($usec, $sec) = explode(" ", microtime());
+        return ((float)$usec + (float)$sec);
     }
 
 }
